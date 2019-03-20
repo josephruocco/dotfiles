@@ -1,0 +1,21 @@
+2019/03/17-09:07:26.983 1a16 Reusing MANIFEST /home/joseph/.config/chromium/Default/Session Storage/MANIFEST-000001
+2019/03/17-09:07:26.983 1a16 Recovering log #21
+2019/03/17-09:07:26.983 1a16 Reusing old log /home/joseph/.config/chromium/Default/Session Storage/000021.log 
+2019/03/17-09:15:03.832 1d2d Level-0 table #25: started
+2019/03/17-09:15:03.897 1d2d Level-0 table #25: 46417 bytes OK
+2019/03/17-09:15:03.931 1d2d Delete type=0 #21
+2019/03/17-09:43:55.848 1d2d Level-0 table #27: started
+2019/03/17-09:43:55.957 1d2d Level-0 table #27: 19239 bytes OK
+2019/03/17-09:43:55.990 1d2d Delete type=0 #24
+2019/03/17-09:43:55.990 1d2d Compacting 4@0 + 1@1 files
+2019/03/17-09:43:56.050 1d2d Generated table #28@0: 1025 keys, 76339 bytes
+2019/03/17-09:43:56.050 1d2d Compacted 4@0 + 1@1 files => 76339 bytes
+2019/03/17-09:43:56.091 1d2d compacted to: files[ 0 1 1 0 0 0 0 ]
+2019/03/17-09:43:56.091 1d2d Delete type=2 #20
+2019/03/17-09:43:56.091 1d2d Delete type=2 #22
+2019/03/17-09:43:56.091 1d2d Delete type=2 #17
+2019/03/17-09:43:56.092 1d2d Delete type=2 #25
+2019/03/17-09:43:56.092 1d2d Delete type=2 #27
+2019/03/17-09:57:59.703 1d2d Level-0 table #30: started
+2019/03/17-09:57:59.754 1d2d Level-0 table #30: 17558 bytes OK
+2019/03/17-09:57:59.788 1d2d Delete type=0 #26

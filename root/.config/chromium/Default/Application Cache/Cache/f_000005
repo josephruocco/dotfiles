@@ -1,0 +1,1271 @@
+
+function init_dfont_data(fontname, metrics) {
+	// Register the newly loaded font
+	DFontText.dfont_table[fontname] = metrics;
+
+	if (DFontText.default_font == null)
+		DFontText.default_font = metrics;
+
+	// Index characters
+	var grid_char_cnt = metrics.grid_size * metrics.grid_size;
+
+	metrics.chars = {};
+
+	metrics.tex_step = metrics.tile_size / metrics.grid_px_size;
+	metrics.tex_active = (metrics.tile_size-2) / metrics.grid_px_size;
+	metrics.tex_base = 1 / metrics.grid_px_size;
+
+	if (metrics.glyphdata) {
+		var glyphs = metrics.glyphs = []
+		var coeff1 = 1.0 / metrics.em_size_factor;
+		var coeff2 = -1.0 / metrics.render_em_size;
+
+		for (var i = 0; i < metrics.glyphdata.length; i++) {
+			var item = metrics.glyphdata[i];
+			glyphs[i] = {
+				uchar: item[0],
+				// original font metrics
+				bearing_x: item[1] * coeff1, bearing_y: item[2] * coeff1,
+				size_x: item[3] * coeff1, size_y: item[4] * coeff1,
+				advance: item[5] * coeff1,
+				// character offset within our grid cell
+				field_bearing_x: item[6] * coeff2, field_bearing_y: item[7] * coeff2
+			};
+		}
+	}
+
+	for (var i = 0; i < metrics.glyphs.length; i++) {
+		var glyph = metrics.glyphs[i];
+		glyph.index = i;
+		glyph.grid_idx = (i / grid_char_cnt|0);
+		var grid_char = i % grid_char_cnt;
+		glyph.grid_y = (grid_char / metrics.grid_size|0);
+		glyph.grid_x = grid_char % metrics.grid_size;
+		metrics.chars[glyph.uchar] = glyph;
+	}
+
+	metrics.default_glyph = metrics.glyphs[0];
+	if ('\ufffd' in metrics.chars) // unicode fallback
+		metrics.default_glyph = metrics.chars['\ufffd'];
+	else if (' ' in metrics.chars)
+		metrics.default_glyph = metrics.chars[' '];
+}
+
+// Returns [glyph, found in fallback font]
+function find_dfont_glyph(metrics, chr) {
+	if (chr in metrics.chars) {
+		return [metrics.chars[chr], false];
+	} else if (DFontText.fallback_font && chr in DFontText.fallback_font.chars) {
+		return [DFontText.fallback_font.chars[chr], true];
+	} else {
+		return [metrics.default_glyph, false];
+	}
+}
+
+function draw_dfont_glyph(metrics, chr, pen, size, vertexElements, canvasElements, rect) {
+	if (chr == '\n') {
+		pen.max_x = Math.max(pen.max_x, pen.x);
+		pen.x = pen.x_start;
+		pen.y += metrics.line_height * size;
+		pen.num_lines++;
+		return;
+	}
+
+	var glyphPair = find_dfont_glyph(metrics, chr);
+
+	var glyph = glyphPair[0];
+	var foundInFallback = glyphPair[1];
+	var gridoffset = 0;
+
+	if (foundInFallback) {
+		gridoffset = metrics.grid_count;
+		metrics = DFontText.fallback_font;
+	}
+
+	var penx = pen.x;
+	pen.x = pen.x + glyph.advance * size;
+
+	// pixel coords
+	var x1 = penx + glyph.field_bearing_x * size;
+	var y1 = pen.y + glyph.field_bearing_y * size;
+	var sz = metrics.active_tile_size * size;
+	var x2 = x1 + sz;
+	var y2 = y1 + sz;
+
+	if (glyph.uchar != ' ' && glyph.uchar != '\u3000' && chr != '\t') {
+		// uv coords
+		var tx1 = metrics.tex_base + metrics.tex_step * glyph.grid_x;
+		var ty1 = metrics.tex_base + metrics.tex_step * glyph.grid_y;
+		var tx2 = tx1 + metrics.tex_active;
+		var ty2 = ty1 + metrics.tex_active;
+
+		// store coords interleaved in the per-texture array
+		var grid = glyph.grid_idx + gridoffset;
+
+		if (!vertexElements[grid])
+			vertexElements[grid] = [];
+
+		vertexElements[grid].push(
+			x1, y1, tx1, ty1, x2, y1, tx2, ty1, x1, y2, tx1, ty2,
+			x1, y2, tx1, ty2, x2, y1, tx2, ty1, x2, y2, tx2, ty2
+		);
+
+		// parameters for the CanvasRenderingContext2D.drawImage() method when drawing the glyph
+		canvasElements.push({
+			page  : grid,
+			sx    : 1 + metrics.tile_size * glyph.grid_x,
+			sy    : 1 + metrics.tile_size * glyph.grid_y,
+			sSize : metrics.tile_size - 2,
+			dx    : x1,
+			dy    : y1,
+			dSize : sz
+		});
+	}
+
+	// also compute the bounding box
+	if (x1 < rect.x) rect.x = x1;
+	if (y1 < rect.y) rect.y = y1;
+	if (x2 > rect.width) rect.width = x2;
+	if (y2 > rect.height) rect.height = y2;
+
+	return foundInFallback;
+}
+
+function compute_rotated_bbox(matrix, verts, round_to_ints)
+{
+	// Compute true bounding box by enumerating vertex data
+	var a = matrix.a;
+	var b = matrix.b;
+	var c = matrix.c;
+	var d = matrix.d;
+	var tx = matrix.tx;
+	var ty = matrix.ty;
+
+	var xmin = a*verts[0] + c*verts[1] + tx;
+	var xmax = xmin;
+	var ymin = b*verts[0] + d*verts[1] + ty;
+	var ymax = ymin;
+
+	for (var i = 2; i < verts.length; i+=2)
+	{
+		var x = verts[i], y = verts[i+1];
+		var x1 = a*x + c*y + tx;
+		if (x1 < xmin) xmin = x1;
+		if (x1 > xmax) xmax = x1;
+		var y1 = b*x + d*y + ty;
+		if (y1 < ymin) ymin = y1;
+		if (y1 > ymax) ymax = y1;
+	}
+
+	if (round_to_ints)
+	{
+		xmin = Math.floor(xmin);
+		ymin = Math.floor(ymin);
+		xmax = Math.ceil(xmax);
+		ymax = Math.ceil(ymax);
+	}
+
+	return new PIXI.Rectangle(xmin, ymin, xmax-xmin, ymax-ymin);
+}
+
+function compute_rotated_rect(matrix, rect, round_to_ints)
+{
+	var x1 = rect.x;
+	var y1 = rect.y;
+	var w = rect.width;
+	var h = rect.height;
+	var verts = [x1, y1, x1, y1+h, x1+w, y1, x1+w, y1+h];
+
+	return compute_rotated_bbox(matrix, verts, round_to_ints);
+}
+
+function measure_dfont_text(metrics, text, size) {
+	var dimensions = {
+		advance: 0
+	}
+
+	var scale = size;
+	for (var i = 0; i < text.length; i++) {
+		var horiAdvance = find_dfont_glyph(metrics, text[i]).advance;
+		dimensions.advance += horiAdvance * scale;
+	}
+
+	return dimensions;
+}
+
+function dfont_flush_elements(vertdata,offsets,sizes,elements) {
+	var start = vertdata.length;
+
+	if (elements)
+		vertdata = vertdata.concat(elements);
+
+	offsets.push(start);
+	sizes.push(vertdata.length - start);
+
+	return vertdata;
+}
+
+function create_dfont_text(metrics, str, size, x0, y0) {
+	// Gather vertices
+	var vertexElements = {};
+	var canvasElements = [];
+	x0 = x0||0;
+	// A hack for OpenType fonts, otherwise the glyphs are top-aligned
+	// For TrueType fonts, this offset is zero (or very close to zero)
+	y0 = y0||0 + ((metrics.line_height - (metrics.ascender - metrics.descender))) * size;
+	var pen = { x: x0, y: y0, max_x: x0, x_start: x0, num_lines:1 };
+
+	var rect = new PIXI.Rectangle(pen.x, pen.y, pen.x, pen.y);
+
+	var has_fallback = false;
+
+	for (var i = 0; i < str.length; i++) {
+		var chr = str[i];
+		var fb = draw_dfont_glyph(metrics, chr, pen, size, vertexElements, canvasElements, rect);
+		has_fallback = has_fallback || fb;
+	}
+
+	rect.width -= rect.x;
+	rect.height -= rect.y;
+
+	// Merge per-texture stretches into one array
+	var vertdata = [];
+	var offsets = [];
+	var sizes = [];
+	var textures = metrics.textures;
+
+	for (var i = 0; i < metrics.grid_count; i++) {
+		vertdata = dfont_flush_elements(vertdata, offsets, sizes, vertexElements[i]);
+	}
+
+	var fallback_font = DFontText.fallback_font;
+	if (has_fallback) {
+		// Append fallback font textures after our own
+		textures = textures.concat(fallback_font.textures);
+
+		for (var i = 0; i < fallback_font.grid_count; i++) {
+			vertdata = dfont_flush_elements(vertdata, offsets, sizes, vertexElements[i + metrics.grid_count]);
+		}
+	}
+
+	// Fuzz radius coefficient at 1:1 scale
+	var fct = 1.0 / size * metrics.render_em_size;
+	var radius = 0.8 * fct * metrics.dist_scale;
+
+	return {
+		array: new Float32Array(vertdata),
+		offsets: offsets,
+		sizes: sizes,
+		textures: textures,
+		dcoeff: radius,
+		canvas_items: canvasElements,
+		tile_size_dest: metrics.active_tile_size * size,
+		bounding_rect: rect,
+		dimensions: {
+			baseline: pen.y,
+			width: Math.max(pen.max_x, pen.x) - x0,
+			height: (metrics.ascender-metrics.descender) * size,
+			line_height: metrics.line_height * size, // includes inter-line space if any
+			line_count: pen.num_lines
+		}
+	};
+}
+
+function dfont_loader_fn()
+{
+	return function (resource, next)
+	{
+		// skip if no data, its not json, or it isn't dfont data
+		if (!resource.data || !resource.isJson ||
+			!resource.data.dist_scale || (!resource.data.glyphs && !resource.data.glyphdata))
+		{
+			return next();
+		}
+
+		var metrics = resource.data;
+		metrics.basepath = resource.url.substr(0, resource.url.lastIndexOf("/")) + "/";
+		metrics.crossOrigin = resource.crossOrigin;
+		metrics.textures = [];
+
+		init_dfont_data(resource.name, resource.data);
+		if (resource.name == "DejaVuSans")
+			DFontText.fallback_font = metrics;
+
+		next();
+	};
+}
+
+PIXI.loaders.Loader.addPixiMiddleware(dfont_loader_fn);
+//PIXI.loader.use(dfont_loader_fn());
+
+
+function DFontShader(shaderManager)
+{
+	var uniforms = {
+		uSampler: { type: 'sampler2D', value: 0 },
+		projectionMatrix: { type: 'mat3', value: new Float32Array([1, 0, 0, 0, 1, 0, 0, 0, 1]) },
+		uFontDistAlpha: { type: '3f', value: [ 0.4, 5.0, 1.0 ] }, // [ dist_min, dist_coeff, alpha ]
+		uFontColor: { type: 'c', value: 0xFF0000 }
+	};
+
+	var attributes = {
+		aVertexPosition: 0,
+		aTextureCoord: 0
+	};
+
+	var vertexSrc = DFontShader.defaultVertexSrc;
+	var fragmentSrc = DFontShader.defaultFragmentSrc;
+
+	PIXI.Shader.call(this, shaderManager, vertexSrc, fragmentSrc, uniforms, attributes);
+}
+
+DFontShader.prototype = Object.create(PIXI.Shader.prototype);
+DFontShader.prototype.constructor = DFontShader;
+
+DFontShader.prototype.setMatrix = function (matrix, tmatrix, data)
+{
+	this.uniforms.projectionMatrix.value = matrix.toArray(true);
+
+	// Compute the effective scaling of the matrix and apply inverse to the fuzz radius
+	var scale = Math.max(0.001, Math.sqrt(tmatrix.a * tmatrix.a + tmatrix.d * tmatrix.d));
+	var r05 = Math.max(0.0, Math.min(0.5, 0.5 * (data.dcoeff / scale)));
+
+	var vals = this.uniforms.uFontDistAlpha.value;
+	vals[0] = 0.5 - r05;
+	vals[1] = 0.5 / r05;
+}
+
+DFontShader.prototype.setColor = function (color, alpha)
+{
+	this.uniforms.uFontColor.value = color;
+	this.uniforms.uFontDistAlpha.value[2] = alpha;
+}
+
+DFontShader.defaultVertexSrc = [
+	'precision mediump float;',
+
+	'attribute vec2 aVertexPosition;',
+	'attribute vec2 aTextureCoord;',
+
+	'uniform mat3 projectionMatrix;',
+	'varying vec2 vTextureCoord;',
+
+	'void main(void){',
+	' gl_Position = vec4((projectionMatrix * vec3(aVertexPosition, 1.0)).xy, 0.0, 1.0);',
+	' vTextureCoord = aTextureCoord;',
+	'}'
+].join('\n');
+
+DFontShader.defaultFragmentSrc = [
+	'precision mediump float;',
+
+	'varying vec2 vTextureCoord;',
+	'uniform sampler2D uSampler;',
+
+	'uniform vec3 uFontDistAlpha;', // [ dist_min, dist_coeff, alpha ]
+	'uniform vec3 uFontColor;',
+
+	'void main() {',
+	'  float dist = texture2D(uSampler, vTextureCoord).r - uFontDistAlpha.x;',
+	'  float t = clamp(dist * uFontDistAlpha.y, 0.0, 1.0);',
+	'  float alpha = t * uFontDistAlpha.z;',
+	'  gl_FragColor = vec4(uFontColor, 1.0) * alpha;',
+	'}'
+].join('\n');
+
+
+function DFontRenderer(renderer)
+{
+	PIXI.ObjectRenderer.call(this, renderer);
+
+	this.matrix = new PIXI.Matrix();
+	this.shader = null;
+}
+
+DFontRenderer.prototype = Object.create(PIXI.ObjectRenderer.prototype);
+DFontRenderer.prototype.constructor = DFontRenderer;
+
+PIXI.WebGLRenderer.registerPlugin('dfont', DFontRenderer);
+
+DFontRenderer.prototype.onContextChange = function ()
+{
+	var gl = this.renderer.gl;
+
+	this.shader = new DFontShader(this.renderer.shaderManager);
+
+	this.vertexBuffer = gl.createBuffer();
+};
+
+DFontRenderer.prototype.destroy = function ()
+{
+	this.renderer.gl.deleteBuffer(this.vertexBuffer);
+	this.shader.destroy();
+	this.renderer = null;
+	this.vertexBuffer = null;
+	this.shader = null;
+};
+
+DFontRenderer.prototype.start = function ()
+{
+	var gl = this.renderer.gl;
+
+	this.renderer.shaderManager.setShader(this.shader);
+	this.renderer.blendModeManager.setBlendMode(PIXI.BLEND_MODES.NORMAL);
+
+	gl.bindBuffer(gl.ARRAY_BUFFER, this.vertexBuffer);
+
+	var stride = 4 * 4;
+	gl.vertexAttribPointer(this.shader.attributes.aVertexPosition, 2, gl.FLOAT, false, stride, 0);
+	gl.vertexAttribPointer(this.shader.attributes.aTextureCoord, 2, gl.FLOAT, false, stride, 2 * 4);
+};
+
+/*DFontRenderer.prototype.stop = function ()
+{
+	this.flush();
+};
+
+DFontRenderer.prototype.flush = function ()
+{
+// flush!
+};*/
+
+DFontRenderer.prototype.render = function (object) // jshint unused:false
+{
+	var gl = this.renderer.gl;
+	var data = object.render_data;
+	var shader = this.shader;
+
+	var mat = this.matrix;
+	var m1 = this.renderer.currentRenderTarget.projectionMatrix;
+	var m2 = object.worldTransform;
+	m1.copy(mat);
+	mat.append(m2);
+
+	shader.setMatrix(mat, m2, data);
+	shader.setColor(object._font.tint||0xFFFFFF, object.worldAlpha);
+	shader.syncUniforms();
+
+	gl.activeTexture(gl.TEXTURE0);
+	gl.bufferData(gl.ARRAY_BUFFER, data.array, gl.DYNAMIC_DRAW);
+
+	for (var i = 0; i < data.sizes.length; i++)
+	{
+		if (data.sizes[i] > 0)
+		{
+			var texture = data.textures[i].baseTexture;
+
+			if (!texture._glTextures[gl.id])
+			{
+				this.renderer.updateTexture(texture);
+			}
+			else
+			{
+				gl.bindTexture(gl.TEXTURE_2D, texture._glTextures[gl.id]);
+			}
+
+			gl.drawArrays(gl.TRIANGLES, data.offsets[i]>>2, data.sizes[i]>>2);
+		}
+	}
+};
+
+
+function DFontText(text, style) {
+	PIXI.DisplayObject.call(this);
+
+	style = style || {};
+
+	this._font = {
+		tint: style.tint !== undefined ? style.tint : 0xFFFFFF,
+		name: null,
+		size: 12
+	};
+
+	this.font = style.font; // run font setter
+
+	this._text = text;
+	if (style.size)
+		this._font.size = style.size;
+
+	this.render_data = null;
+
+	this.render_cached = false;
+}
+
+DFontText.prototype = Object.create(PIXI.DisplayObject.prototype);
+DFontText.prototype.constructor = DFontText;
+
+DFontText.prototype.interactiveChildren = false; // no children at all!
+
+DFontText.prototype.cache_canvas = null;
+DFontText.prototype.cache_context = null;
+
+DFontText.default_font = null
+DFontText.fallback_font = null
+DFontText.dfont_table = {}
+
+DFontText.temp_canvas = null;
+DFontText.temp_context = null;
+
+DFontText.initDFontData = init_dfont_data;
+
+DFontText.getNumPages = function(fontfamily) {
+	var metrics = DFontText.dfont_table[fontfamily];
+	if (!metrics)
+		return 0;
+	return metrics.grid_count;
+}
+
+DFontText.loadTextures = function(fontfamily, metrics, callback) {
+	var loadOptions = {
+		crossOrigin: metrics.crossOrigin,
+		loadType: PIXI.loaders.Resource.LOAD_TYPE.IMAGE
+	};
+
+	metrics.textures = [];
+
+	for (var i = 0; i < metrics.grid_count; i++) {
+		var name = (i <= 9 ? "0"+i : ""+i) + ".png";
+		var onload = (function(idx) {
+			return function(res) {
+				metrics.textures[idx] = res.texture;
+				callback();
+			};
+		}.bind(this, i))();
+
+		PIXI.loader.add(fontfamily + '_img'+i, metrics.basepath + name, loadOptions, onload);
+	}
+	PIXI.loader.load();
+}
+
+DFontText.loadTexture = function(fontfamily, metrics, page, callback) {
+	var loadOptions = {
+		crossOrigin: metrics.crossOrigin,
+		loadType: PIXI.loaders.Resource.LOAD_TYPE.IMAGE
+	};
+
+	if (!metrics.textures)
+		metrics.textures = [];
+
+	var name = (page <= 9 ? "0"+page : ""+page) + ".png";
+	var onload = (function(idx) {
+		return function(res) {
+			metrics.textures[page] = res.texture;
+			callback();
+		};
+	}.bind(this, page))();
+
+	PIXI.loader.add(fontfamily + '_img'+page, metrics.basepath + name, loadOptions, onload);
+	PIXI.loader.load();
+}
+
+Object.defineProperties(DFontText.prototype, {
+	tint: {
+		get: function ()
+		{
+			return this._font.tint;
+		},
+		set: function (value)
+		{
+			this._font.tint = (typeof value === 'number' && value >= 0) ? value : 0xFFFFFF;
+		}
+	},
+	font: {
+		get: function ()
+		{
+			return this._font;
+		},
+		set: function (value)
+		{
+			if (!value) {
+				return;
+			}
+			if (typeof value === 'string') {
+				value = value.split(' ');
+				this._font.name = value.length === 1 ? value[0] : value.slice(1).join(' ');
+				this._font.size = value.length >= 2 ? parseInt(value[0], 10) : 0;
+			}
+			else {
+				this._font.name = value.name;
+				this._font.size = typeof value.size === 'number' ? value.size : parseInt(value.size, 10);
+			}
+			if (!(this._font.size > 0)) // also catches NaN
+				this._font.size = 12;
+			this.invalidate();
+		}
+	},
+	size: {
+		get: function ()
+		{
+			return this._font.size;
+		},
+		set: function (value)
+		{
+			value = (typeof value === 'number' && value >= 0) ? value : 12;
+			if (this._font.size === value)
+				return;
+			this._font.size = value;
+			this.invalidate();
+		}
+	},
+	text: {
+		get: function ()
+		{
+			return this._text;
+		},
+		set: function (value)
+		{
+			value = value.toString() || ' ';
+			if (this._text === value)
+				return;
+			this._text = value;
+			this.invalidate();
+		}
+	}
+});
+
+DFontText.prototype.invalidate = function ()
+{
+	this.render_data = null;
+	this._currentBounds = null;
+}
+
+DFontText.prototype.layout = function ()
+{
+	if (this.render_data == null)
+		this.doLayoutText();
+}
+
+DFontText.prototype.doLayoutText = function ()
+{
+	var metrics = DFontText.dfont_table[this._font.name] || DFontText.default_font;
+
+	// TODO: implement text alignment etc
+	this.render_data = create_dfont_text(metrics, this._text, this._font.size);
+
+	this.render_cached = false;
+	this._bounds = this.render_data.bounding_rect;
+}
+
+DFontText.prototype.renderWebGL = function (renderer) {
+	this.layout();
+
+	renderer.setObjectRenderer(renderer.plugins.dfont);
+	renderer.plugins.dfont.render(this);
+}
+
+DFontText.prototype.getBounds = function (matrix)
+{
+	matrix = matrix || this.worldTransform;
+
+	this.layout();
+
+	if (matrix == this.worldTransform)
+	{
+		var rect = this._currentBounds;
+		if (rect != null) return rect;
+
+		return this._currentBounds = compute_rotated_rect(matrix, this._bounds, true);
+	}
+	else
+		return compute_rotated_rect(matrix, this._bounds, true);
+}
+
+DFontText.prototype.getLocalBounds = function ()
+{
+	this.layout();
+	return this._bounds;
+};
+
+DFontText.prototype.getTextDimensions = function ()
+{
+	this.layout();
+	return this.render_data.dimensions;
+}
+
+function clamp(x, xmin, xmax) {
+	if (x < xmin) return xmin;
+	if (x > xmax) return xmax;
+	return x;
+}
+
+function apply_dfont_shading(imgbytes, tint, r05) {
+	tint = tint|0;
+	r05 = +r05;
+
+	var bufsize = imgbytes.length|0;
+
+	var tintb = (tint & 0xff)|0;
+	var tintg = ((tint>>8) & 0xff)|0;
+	var tintr = ((tint>>16) & 0xff)|0;
+
+	var dbase = (255.0 * (0.5 - r05))|0;
+	var dmul = +((0.5 / 255.0) / r05);
+
+	for (var i = 0; i < bufsize; i += 4) {
+		var cv = imgbytes[i]|0;
+
+		//float dist = texture2D(uSampler, vTextureCoord).r - uFontDistAlpha.x;',
+		var dist = (cv-dbase)|0;
+
+		//float t = clamp(dist * uFontDistAlpha.y, 0.0, 1.0);',
+		var t = clamp(+(dist*dmul), 0.0, 1.0);
+
+		//float alpha = t * t * (3.0 - 2.0*t) * uFontDistAlpha.z;
+		// var tv = t * t * (3.0 - 2.0 * t);
+		var tv = t;
+
+		imgbytes[i] = tintr;
+		imgbytes[i+1] = tintg;
+		imgbytes[i+2] = tintb;
+		imgbytes[i+3] = (tv * 255.0)|0;
+	}
+}
+
+DFontText.prototype.dfontsLoaded = function()
+{
+	var metrics = DFontText.dfont_table[this._font.name];
+
+	if (typeof metrics === 'undefined')
+		return false;
+
+	for (var i = 0; i < metrics.grid_count; i++)
+		if (typeof metrics.textures[i] === 'undefined')
+			return false;
+
+	return true;
+}
+
+DFontText.prototype.renderCanvas = function (renderer)
+{
+	var cacheEnabled = this.dfontsLoaded();
+	if (!cacheEnabled)
+		this.render_cached = false;
+
+	this.layout();
+
+	if (this.render_data.canvas_items.length == 0)
+		return;
+
+	var wt = this.worldTransform.clone().prepend(new PIXI.Matrix().scale(renderer.resolution, renderer.resolution));
+	var bbox = this.getBounds(wt);
+
+	if (this.render_cached)
+	{
+		var ct = this.cache_matrix;
+		var same_rot = (ct.a == wt.a && ct.b == wt.b && ct.c == wt.c && ct.d == wt.d);
+		var same_pos = (ct.tx == wt.tx && ct.ty == wt.ty);
+
+		if (same_rot && same_pos)
+		{
+			renderer.context.setTransform(1, 0, 0, 1, 0, 0);
+			renderer.context.globalAlpha = this.worldAlpha;
+			renderer.context.drawImage(this.cache_canvas, bbox.x, bbox.y);
+			return;
+		}
+
+		this.render_cached = false;
+	}
+
+	var tmp_cnv = this.cache_canvas;
+	var tmp_ctx = this.cache_context;
+
+	if (tmp_cnv == null)
+	{
+		this.cache_matrix = new PIXI.Matrix();
+		this.cache_canvas = tmp_cnv = document.createElement('canvas');
+		this.cache_context = tmp_ctx = tmp_cnv.getContext('2d');
+
+		tmp_ctx.fillStyle = 'black';
+	}
+
+	var full_w = bbox.width;
+	var full_h = bbox.height;
+
+	if (full_w < 1 || full_h < 1)
+		return;
+
+	if (full_w != tmp_cnv.width || full_h != tmp_cnv.height)
+	{
+		tmp_cnv.width = full_w;
+		tmp_cnv.height = full_h;
+	}
+
+	this.renderCanvasChars(renderer, wt, bbox, tmp_cnv, tmp_ctx, full_w, full_h);
+
+	wt.copy(this.cache_matrix);
+	if (cacheEnabled)
+		this.render_cached = true;
+
+	// Draw the image
+	renderer.context.setTransform(1, 0, 0, 1, 0, 0);
+	renderer.context.globalAlpha = this.worldAlpha;
+	renderer.context.drawImage(tmp_cnv, bbox.x, bbox.y);
+}
+
+DFontText.prototype.renderCanvasCharsBlend = function (renderer, wt, bbox, tmp_cnv, tmp_ctx, full_w, full_h)
+{
+	var data = this.render_data;
+	var chars = data.canvas_items;
+
+	// Clean the temporary canvas
+	tmp_ctx.setTransform(1, 0, 0, 1, 0, 0);
+
+	tmp_ctx.globalCompositeOperation = 'source-over';
+	tmp_ctx.fillRect(0, 0, full_w, full_h);
+
+	tmp_ctx.globalCompositeOperation = 'lighten';
+
+	tmp_ctx.setTransform(
+		wt.a, wt.b, wt.c, wt.d,
+		(wt.tx - bbox.x),
+		(wt.ty - bbox.y)
+	);
+
+	// Draw raw characters to temporary
+	for (var i = 0; i < chars.length; i++)
+	{
+		var texture = data.textures[chars[i].page];
+		if (!texture)
+			continue;
+		var resolution = texture.baseTexture.resolution;
+
+		var tsize_src = chars[i].sSize;
+		var tsize_dst = chars[i].dSize;
+
+		tmp_ctx.drawImage(
+			texture.baseTexture.source,
+			chars[i].sx * resolution,
+			chars[i].sy * resolution,
+			tsize_src, tsize_src,
+			chars[i].dx,
+			chars[i].dy,
+			tsize_dst, tsize_dst
+		);
+	}
+
+	// Apply the shader in code
+	var img = tmp_ctx.getImageData(0, 0, full_w, full_h);
+
+	var scale = Math.max(0.001, Math.sqrt(wt.a * wt.a + wt.d * wt.d));
+	var r05 = Math.max(0.0, Math.min(0.5, 0.5 * (data.dcoeff / scale)));
+
+	apply_dfont_shading(img.data, this._font.tint, r05);
+
+	tmp_ctx.putImageData(img, 0, 0);
+}
+
+DFontText.prototype.renderCanvasCharsNoBlend = function (renderer, wt, cache_bbox, cache_cnv, cache_ctx, cache_w, cache_h)
+{
+	var data = this.render_data;
+	var chars = data.canvas_items;
+
+	// Clean the temporary canvas
+	cache_ctx.setTransform(1, 0, 0, 1, 0, 0);
+	cache_ctx.clearRect(0, 0, cache_w, cache_h);
+
+	if (DFontText.temp_canvas == null)
+	{
+		DFontText.temp_canvas = document.createElement('canvas');
+		DFontText.temp_context = DFontText.temp_canvas.getContext('2d');
+
+		DFontText.temp_context.fillStyle = 'black';
+	}
+
+	var tmp_cnv = DFontText.temp_canvas;
+	var tmp_ctx = DFontText.temp_context;
+
+	// Compute character-independent info
+	var tsize_dst_main = data.tile_size_dest;
+
+	var rect = new PIXI.Rectangle(0,0,tsize_dst_main,tsize_dst_main);
+	var max_bbox = compute_rotated_rect(wt, rect, true);
+	var full_w = tmp_cnv.width = max_bbox.width;
+	var full_h = tmp_cnv.height = max_bbox.height;
+
+	if (full_w == 0 || full_h == 0) {
+		return;
+	}
+
+	var scale = Math.max(0.001, Math.sqrt(wt.a * wt.a + wt.d * wt.d));
+	var r05 = Math.max(0.0, Math.min(0.5, 0.5 * (data.dcoeff / scale)));
+
+	// Without blend mode support characters have to be drawn one by one
+	for (var i = 0; i < chars.length; i++)
+	{
+		var texture = data.textures[chars[i].page];
+		if (!texture)
+			continue;
+		var resolution = texture.baseTexture.resolution;
+
+		var tsize_src = chars[i].sSize;
+		var tsize_dst = chars[i].dSize;
+
+		rect.x = chars[i].dx * resolution;
+		rect.y = chars[i].dy * resolution;
+		rect.width = tsize_dst;
+		rect.height = tsize_dst;
+
+		var bbox = compute_rotated_rect(wt, rect, true);
+
+		tmp_ctx.setTransform(1, 0, 0, 1, 0, 0);
+		tmp_ctx.fillRect(0, 0, full_w, full_h);
+
+		tmp_ctx.setTransform(
+			wt.a, wt.b, wt.c, wt.d,
+			(wt.tx - bbox.x),
+			(wt.ty - bbox.y)
+		);
+
+		tmp_ctx.drawImage(
+			texture.baseTexture.source,
+			chars[i].sx * resolution,
+			chars[i].sy * resolution,
+			tsize_src, tsize_src,
+			rect.x, rect.y,
+			tsize_dst, tsize_dst
+		);
+
+		// Apply the shader in code
+		var img = tmp_ctx.getImageData(0, 0, full_w, full_h);
+		apply_dfont_shading(img.data, this._font.tint, r05);
+		tmp_ctx.putImageData(img, 0, 0);
+
+		// Draw the image
+		cache_ctx.drawImage(tmp_cnv, bbox.x-cache_bbox.x, bbox.y-cache_bbox.y);
+	}
+}
+
+DFontText.prototype.renderCanvasChars = (
+	PIXI.utils.canUseNewCanvasBlendModes() ?
+		DFontText.prototype.renderCanvasCharsBlend :
+		DFontText.prototype.renderCanvasCharsNoBlend
+);
+
+///////////////////////////////
+// Canvas Alpha Mask support //
+///////////////////////////////
+
+var AlphaMask_use_getImageData = !PIXI.utils.canUseNewCanvasBlendModes();
+
+function apply_alpha_mask(main_ctx, mask_ctx, w, h, res)
+{
+	if (0 < w && 0 < h) { //LSTSBD-471 FireFox does not like Mask(Rectangle(imageW,imageH), <LoadingImage>) i.e Rectangle(0, 0)
+		var img = main_ctx.getImageData(0, 0, w * res, h * res);
+		var mask = mask_ctx.getImageData(0, 0, w * res, h * res);
+
+		var imgdata = img.data;
+		var maskdata = mask.data;
+		var bufsize = imgdata.length|0;
+
+		for (var i = 3; i < bufsize; i += 4) {
+			imgdata[i] = ((imgdata[i] * maskdata[i])/255)|0;
+		}
+
+			main_ctx.putImageData(img, 0, 0);
+	}
+}
+
+function allocate_render_texture(texture, renderer, w, h)
+{
+	if (texture == null)
+	{
+		return new PIXI.RenderTexture(renderer, w|0, h|0, 0, renderer.resolution);
+	}
+
+	if (texture.width != w || texture.height != h)
+	{
+		// resize broken with resolution != 1
+		//texture.resize(w|0, h|0, true);
+
+		texture.destroy();
+		return new PIXI.RenderTexture(renderer, w|0, h|0, 0, renderer.resolution);
+	}
+	return texture;
+}
+
+PIXI.Container.prototype._alphaMask = null;
+PIXI.Container.prototype._canvasFilters = null;
+
+Object.defineProperties(PIXI.Container.prototype, {
+	alphaMask: {
+		get: function ()
+		{
+			return this._alphaMask;
+		},
+		set: function (value)
+		{
+			if (this._alphaMask === value)
+			{
+				return;
+			}
+
+			if (this._alphaMask)
+			{
+				this._alphaMask.renderable = true;
+			}
+
+			this._alphaMask = value;
+
+			if (value)
+			{
+				this._alphaMask.renderable = false;
+			}
+
+			this._updateFilterHooks();
+		}
+	},
+	canvasFilters: {
+		get: function ()
+		{
+			return this._canvasFilters && this._canvasFilters.slice();
+		},
+		set: function (value)
+		{
+			this._canvasFilters = value && value.slice();
+			this._updateFilterHooks();
+		}
+	}
+});
+
+PIXI.Container.prototype._updateFilterHooks = function ()
+{
+	if (this._alphaMask || (this._canvasFilters && this._canvasFilters.length > 0))
+	{
+		if (this._CF_originalGetBounds == null)
+		{
+			this._CF_originalRenderCanvas = this.renderCanvas;
+			this._CF_originalGetBounds = this.getBounds;
+			this.renderCanvas = this._renderFilterCanvas;
+			this.getBounds = this._getFilterBounds;
+		}
+	}
+	else if (this._CF_originalGetBounds != null)
+	{
+		this.renderCanvas = this._CF_originalRenderCanvas;
+		this.getBounds = this._CF_originalGetBounds;
+		this._CF_originalGetBounds = null;
+	}
+}
+
+PIXI.AbstractFilter.prototype.expandCanvasBounds = function (bounds)
+{
+	// nop
+}
+
+PIXI.AbstractFilter.prototype.drawToCanvas = function (input_tex, aux_tex, out_ctx, x, y)
+{
+	return input_tex;
+}
+
+PIXI.filters.DropShadowFilter.prototype.expandCanvasBounds = function (bounds)
+{
+	var dist = this.distance;
+	var angle = this.angle;
+	var radius = this.blur / 3;
+
+	var dx = Math.sin(angle) * dist;
+	var dy = Math.cos(angle) * dist;
+
+	bounds.x += Math.min(dx, 0) - radius;
+	bounds.y += Math.min(dy, 0) - radius;
+	bounds.width += Math.max(dx, 0) + radius;
+	bounds.height += Math.max(dy, 0) + radius;
+}
+
+PIXI.filters.DropShadowFilter.prototype.drawToCanvas = function (input_tex, aux_tex, out_ctx, x, y)
+{
+	var outtex = null;
+
+	if (out_ctx == null) {
+		outtex = aux_tex;
+		out_ctx = aux_tex.textureBuffer.context;
+		x = y = 0;
+
+		outtex.clear();
+	}
+
+	var dist = this.distance;
+	var angle = this.angle;
+	var color = PIXI.utils.hex2rgb(this.color);
+	var res = input_tex.resolution;
+
+	out_ctx.save();
+	out_ctx.shadowColor = "rgba("+color[0]*255+","+color[1]*255+","+color[2]*255+","+this.alpha+")";
+	out_ctx.shadowBlur = this.blur/3 * res;
+	out_ctx.shadowOffsetX = Math.sin(angle) * dist * res;
+	out_ctx.shadowOffsetY = Math.cos(angle) * dist * res;
+
+	out_ctx.setTransform(1, 0, 0, 1, 0, 0);
+	out_ctx.drawImage(input_tex.textureBuffer.canvas, x * res, y * res);
+	out_ctx.restore();
+
+	return outtex;
+}
+
+PIXI.filters.BlurFilter.prototype.expandCanvasBounds = function (bounds)
+{
+	var radius = this.blur / 3;
+
+	bounds.x -= radius;
+	bounds.y -= radius;
+	bounds.width += radius;
+	bounds.height += radius;
+}
+
+PIXI.filters.BlurFilter.prototype.drawToCanvas = function (input_tex, aux_tex, out_ctx, x, y)
+{
+	var radius = this.blur / 3;
+	var res = input_tex.resolution;
+
+	StackBlur.canvasRGBA(
+		input_tex.textureBuffer.canvas,
+		0, 0, input_tex.width * res, input_tex.height * res,
+		radius * res
+	);
+
+	return input_tex;
+}
+
+PIXI.Container.prototype._getFilterBounds = function ()
+{
+	if(this._currentBounds)
+		return this._currentBounds;
+
+	var bounds = this._CF_originalGetBounds();
+
+	var filters = this._canvasFilters;
+	if (filters == null)
+		return bounds;
+
+	var xmin = Math.floor(bounds.x);
+	var ymin = Math.floor(bounds.y);
+	var xmax = Math.ceil(bounds.width + bounds.x);
+	var ymax = Math.ceil(bounds.height + bounds.y);
+
+
+	bounds.x = xmin;
+	bounds.y = ymin;
+	bounds.width = xmax;
+	bounds.height = ymax;
+
+	for (var i = 0; i < filters.length; i++) {
+		filters[i].expandCanvasBounds(bounds);
+	}
+
+	bounds.width -= bounds.x;
+	bounds.height -= bounds.y;
+	return bounds;
+}
+
+PIXI.Container.prototype._renderFilterCanvas = function (renderer)
+{
+	if (!this.visible || this.alpha <= 0 || !this.renderable)
+	{
+		return;
+	}
+
+	var filters = this._canvasFilters;
+
+	if ((filters == null || filters.length == 0) && this._alphaMask == null)
+	{
+		return this._CF_originalRenderCanvas(renderer);
+	}
+
+	var bounds = this.getBounds();
+	var wt = this.worldTransform;
+
+	var x = Math.floor(bounds.x);
+	var y = Math.floor(bounds.y);
+	var w = Math.ceil(bounds.width + bounds.x - x);
+	var h = Math.ceil(bounds.height + bounds.y - y);
+
+	// Expand area to increments of 32 to minimize reallocations
+	w = (w+31) & ~31;
+	h = (h+31) & ~31;
+
+	var cachedRenderTarget = renderer.context;
+
+	var m = this._filterMatrix;
+	if (m == null)
+		m = this._filterMatrix = wt.clone();
+
+	this._filterTexMain = allocate_render_texture(this._filterTexMain, renderer, w, h);
+	this._filterTexAux = allocate_render_texture(this._filterTexAux, renderer, w, h);
+
+	// render
+	var originalRenderCanvas = this.renderCanvas;
+	this.renderCanvas = this._CF_originalRenderCanvas;
+
+	wt.copy(m).translate(-x, -y);
+	this._filterTexMain.render(this, m, true);
+
+	if (this._alphaMask != null)
+	{
+		this._alphaMask.renderable = true;
+		this._alphaMask.worldTransform.copy(m).translate(-x, -y);
+		this._filterTexAux.render(this._alphaMask, m, true);
+		this._alphaMask.renderable = false;
+	}
+
+    this.renderCanvas = originalRenderCanvas;
+
+    // mask
+	if (this._alphaMask != null)
+	{
+		var main_ctx = this._filterTexMain.textureBuffer.context;
+		var mask_ctx = this._filterTexAux.textureBuffer.context;
+
+		if (AlphaMask_use_getImageData)
+		{
+			apply_alpha_mask(main_ctx, mask_ctx, w, h, renderer.resolution);
+		}
+		else
+		{
+			main_ctx.globalCompositeOperation = 'destination-in';
+			main_ctx.setTransform(1, 0, 0, 1, 0, 0);
+			main_ctx.drawImage(this._filterTexAux.textureBuffer.canvas, 0, 0);
+			main_ctx.globalCompositeOperation = 'source-over';
+		}
+	}
+
+	// restore context
+	renderer.context = cachedRenderTarget;
+
+	// evaluate filters
+	var ctx = renderer.context;
+
+	ctx.globalAlpha = this.worldAlpha;
+
+	var curtex = this._filterTexMain;
+	var auxtex = this._filterTexAux;
+	var rvlast = curtex;
+
+	if (filters != null && filters.length > 0)
+	{
+		for (var i = 0; i < filters.length-1; i++)
+		{
+			var rv = filters[i].drawToCanvas(curtex, auxtex, null, 0, 0);
+
+			if (rv == auxtex)
+			{
+				var tmp = auxtex;
+				auxtex = curtex;
+				curtex = tmp;
+			}
+		}
+
+		// evaluate last filter and render
+		rvlast = filters[filters.length-1].drawToCanvas(curtex, auxtex, ctx, x, y);
+	}
+
+	if (rvlast != null)
+	{
+		var res = renderer.resolution;
+
+		ctx.setTransform(1, 0, 0, 1, 0, 0);
+		ctx.drawImage(rvlast.textureBuffer.canvas, x * res, y * res);
+	}
+
+	this.updateTransform();
+}
+
