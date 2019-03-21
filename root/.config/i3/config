@@ -155,3 +155,8 @@ bar {
         status_command i3status
         tray_output primary
 }
+
+
+# switch between layouts quickly
+bindcode Shift+50 exec setxkbmap -layout dvorak
+bindcode Shift+62 exec setxkbmap -layout us
