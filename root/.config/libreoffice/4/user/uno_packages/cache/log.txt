@@ -1,9 +1,0 @@
-###### Progress log entry 2018-09-06 13:16:58 ######
-###### Progress log entry 2018-09-13 14:52:53 ######
-###### Progress log entry 2018-09-13 14:53:10 ######
-###### Progress log entry 2018-09-20 14:08:10 ######
-###### Progress log entry 2018-09-20 18:13:44 ######
-###### Progress log entry 2018-10-04 13:38:11 ######
-###### Progress log entry 2018-10-18 17:42:19 ######
-###### Progress log entry 2018-10-25 09:37:52 ######
-###### Progress log entry 2019-03-15 15:04:41 ######
