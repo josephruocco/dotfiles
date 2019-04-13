@@ -1,6 +1,6 @@
 export ZSH=/home/joseph/.oh-my-zsh
 
-ZSH_THEME="minimal"
+ZSH_THEME="bira"
 HYPHEN_INSENSITIVE="true"
 COMPLETION_WAITING_DOTS="true" # Maybe disable ?
 
