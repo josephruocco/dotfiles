@@ -204,14 +204,42 @@
 * Themes and modeline
   #+BEGIN_SRC emacs-lisp 
 
-(use-package color-theme
-:ensure t)
-(use-package moe-theme
-:ensure t)
-(moe-dark)
+ (use-package color-theme-modern
+      :ensure t)
+    (use-package zenburn-theme
+      :ensure t
+    
+      )
 
-(set-face-foreground 'font-lock-string-face "red")
-(set-face-foreground 'font-lock-comment-face "pink")
+        (use-package base16-theme
+        :ensure t
+        )
+        (use-package moe-theme
+        :ensure t)
+
+
+        (use-package alect-themes
+        :ensure t)
+
+    (use-package zerodark-theme
+        :ensure t)
+
+    (use-package faff-theme
+      :ensure t)
+    (use-package poet-theme
+      :ensure t)
+    (use-package tao-theme
+      :ensure t)
+    (use-package doom-themes
+      :ensure t)
+    (use-package doom-modeline
+      :ensure t)
+
+(require 'doom-modeline)
+(doom-modeline-init)
+;(load-theme 'faff t)
+(load-theme 'faff t)
+
 
   #+END_SRC
 
