@@ -1,2 +1,29 @@
-* Guidelines
-** nothing yet...
+#+TITLE: Guidelines
+#+AUTHOR: Joseph Ruocco
+#+STARTIP: overview
+
+* Installing
+There are two install (you'll have to manually install the programs,
+ this only hosts my configs) methods, made for users' ease.
+** Install everything with symlinks
+#+BEGIN_SRC sh
+git clone https://github.com/josephruocco/dotfiles.git ~/dotfiles
+cd ~/dotfiles
+./install
+#+END_SRC
+** Install specific programs with symlinks
+(let PROGRAM be the placeholder you replace, eg to install emacs you
+would replace PROGRAM with emacs in the following block)
+#+BEGIN_SRC sh
+git clone https://github.com/josephruocco/dotfiles.git ~/dotfiles
+cd ~/dotfiles
+./install PROGRAM
+#+END_SRC
+** Install specific programs without symlinks
+(let PROGRAM be the placeholder you replace, eg to install emacs you
+would replace PROGRAM with emacs in the following block)
+#+BEGIN_SRC sh
+git clone https://github.com/josephruocco/dotfiles.git ~/dotfiles
+cd ~/dotfiles
+cp -r PROGRAM ~/
+#+END_SRC
